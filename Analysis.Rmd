@@ -1,0 +1,185 @@
+---
+title: "ZNF808 Assessment"
+author: "Ethan de Villiers"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+Assessment time start: 5:34pm Wednesday 4th September  
+  
+Previous steps / analysis for differential expression:  
+* Compared control vs ZNF808 KO cells (in vitro)  
+* Measured abundance (non-neg ~normalised~ STANDARDISED count) of genes   
+  > normalised refers to value-min / range = values between 0 - 1  
+  > this mean it was standardised? Unlikely Z score, values too high  
+* Differential expression = gene is significantly expressed in control or KO cells  
+* Stratified by pancreatic differentiation (S0 - S4)  
+  > Allows cascaded effects of KO and gene expression to be viewed across differentiation stages  
+  
+Inherited data:  
+* Already done the KO vs Control = log2FoldChange, lfcSE, stat, pvalue, padj  
+* I get differential expression data (KO vs Control)  
+  
+Task 1 specification:   
+* Differentially expressed = padj < 0.05  
+* ACTIVATED = differentially_expressed + log2FoldChange > 0  
+* REPRESSED = differentially_expressed + log2FoldChange < 0  
+  
+Task 1 my tasks:  
+* create column differentially_expressed (binary) if padj < 0.05 = 1  
+* create column: activated (binary) = if differentially_expressed && log2FoldChange > 0  
+* create column: repressed (binary) = if differentially_expressed && log2FoldChange < 0  
+
+``` {r Init, echo = T, results = 'hide', warning = F, message = F}
+library(tidyverse)
+library(ggplot2)
+library(ggridges)
+
+# LOAD DATA
+df = read_tsv('znf808_degene_data_task.tsv')
+```
+\newpage
+``` {r Task 1: Data Summary}
+ df %>% summary() 
+```
+
+\newpage
+``` {r Task 1: Inspecting df}
+# using summary() shows Gene, Stage, chrom, strand are poorly typed as chars not factors
+df = df %>% mutate(
+  Gene = as.factor(Gene),
+  Stage = as.factor(Stage),
+  chrom = as.factor(chrom),
+  strand = as.factor(strand)
+)
+
+# Plot data of interest: 
+cols_of_interest = c("baseMean", "log2FoldChange", "padj")
+
+for (col in cols_of_interest) {
+  plot = ggplot(df, aes(x=!!sym(col))) +
+    geom_histogram()
+  print(plot)
+}
+
+```
+
+Can visually see from plots that baseMean has extreme values, but assuming it is correct since we inherited the dataset. Otherwise would truncate rows where baseMean > 500000 (only 13 rows). Alternatively can choose +- 3 or 4 StDev to truncate values, depends on if prediction models are underfit.
+
+\newpage
+``` {r Task 1: Analysis}
+# setting binary classification columns
+df = df %>%
+  mutate(
+    differentially_expressed = ifelse(padj < 0.05, 1, 0),
+    activated = ifelse(differentially_expressed == 1 & log2FoldChange > 0,1,0),
+    repressed = ifelse(differentially_expressed == 1 & log2FoldChange < 0,1,0)
+  )
+
+# Visualisation: 
+df_summary = df %>%
+  filter(differentially_expressed == 1) %>%
+  group_by(Stage) %>%
+  summarise(
+    differentially_expressed = n(),  # Count of differentially expressed genes
+    activated = sum(activated),      # Sum of activated genes
+    repressed = sum(repressed)       # Sum of repressed genes
+  )
+
+print(df_summary)
+
+
+visual_df = df_summary %>%
+  pivot_longer(
+    cols = colnames(df_summary)[2:length(colnames(df_summary))], # take all col names but first (Stage)
+    names_to = "State",
+    values_to = "Frequency"
+  )
+
+# Plotting plain differential expression across stages
+ggplot(
+  visual_df %>% filter(State == "differentially_expressed"),
+  aes(x = Stage, y = Frequency)
+) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = str_wrap(
+      "Differentially expressed counts of genes across pancreatic differentiation stages",
+      60
+    ),
+    y = "Count",
+  ) +
+  theme_minimal()
+  
+  
+```
+
+\newpage
+```{r Task 1: Visualisation}
+# Plotting activation vs repressed genes across stages
+ggplot(
+  visual_df %>% filter(State != "differentially_expressed"),
+  aes(x = Stage, y = Frequency, fill=State)
+) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = str_wrap(
+      "Differentially expressed counts of genes across pancreatic differentiation stages",
+      60
+    ),
+    y = "Count",
+  ) +
+  theme_minimal()
+```
+
+\newpage
+Task 2:  
+ * DistanceNearestMER11 = distance between gene + MER11  
+ * Predictor = Distance (continuous) --> outcome = activation / repressed  
+
+``` {r Task 2}
+
+# creating dataframe
+task2_df = df %>%
+  filter(activated == 1 | repressed == 1) %>% # only take repressed or activated
+  mutate(state = ifelse(activated == 1, 1, 0)) %>% # when not activated, must be repressed based on filter above
+  select(DistanceNearestMER11, state, Stage)
+
+# Iterate through stages, generate GLM logreg model, print findings.
+for (stagei in unique(task2_df$Stage)){
+  stage_data = task2_df %>% filter(Stage == stagei) # filter to this stage's data
+  
+  # create logreg model for binary outcome prediction
+  model = glm(state ~ DistanceNearestMER11, data = stage_data, family = binomial)
+  
+  # print model statistics.
+  print(summary(model))
+  p_value = coef(summary(model))[2, 4]
+  if (p_value < 0.05){
+    print(paste(
+      "PValue = ",
+      p_value
+    ))
+    print(paste(
+      "indicates Distance to Nearest MER11 IS statistically significant in Stage ",
+      stagei
+    ))
+  } else {
+    
+    print(paste(
+      "PValue = ",
+      p_value
+    ))
+    print(paste(
+      "indicates Distance to Nearest MER11 is NOT statistically significant in Stage ",
+      stagei
+    ))
+  }
+  print("################################")
+  print("################################")
+  print("################################")
+}
+
+```
+
+Discussion:  
+MER11 is a nuclear protein involved in general DNA repair and maintenance, including DNA recombination, telomere length maintenance, and DNA double-strand break repair. (https://www.genecards.org/cgi-bin/carddisp.pl?gene=MRE11) During Stages S0-S3, the distance between gene TSS and the most proximal MER11 element was seen to significantly impact whether the gene was to be repressed or activated in differentially expressed genes relative to control vs ZNF808 KO mice. As the logstic regression coefficient was seen to associate increased distance from MER11 elements to increased risk of repression, it can be proposed that MER11 is able to mitigate the effects of agenesis caused by ZNF808 KO, and protect against repression. Conversely, no signficance was seen in pancreatic differentiation stage S4, possibly suggesting that genetic/cell profile is determined before this state, thereby mitigating the protective effects of MER11.
